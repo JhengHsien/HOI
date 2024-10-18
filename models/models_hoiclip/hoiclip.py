@@ -15,6 +15,8 @@ from datasets.static_hico import HOI_IDX_TO_ACT_IDX
 from ..backbone import build_backbone
 from ..matcher import build_matcher
 from .gen import build_gen
+from .dino import dino
+from datasets.static_hico import OBJ_IDX_TO_OBJ_NAME
 
 
 def _sigmoid(x):
@@ -44,6 +46,11 @@ class HOICLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.obj_logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.clip_model, self.preprocess = clip.load(self.args.clip_model)
+
+        # Dino
+        self.dino = dino()
+        # Cross Attention
+        self.MHA = nn.MultiheadAttention(embed_dim=512, num_heads=8)
 
         if self.args.dataset_file == 'hico':
             hoi_text_label = hico_text_label
@@ -165,7 +172,8 @@ class HOICLIP(nn.Module):
                 obj_text_embedding.float()), torch.randn_like(v_linear_proj_weight.float()), \
                    hoi_text_label_del, obj_text_inputs, torch.randn_like(text_embedding_del.float())
 
-    def forward(self, samples: NestedTensor, is_training=True, clip_input=None, targets=None):
+    def forward(self, samples: NestedTensor, is_training=True, clip_input=None, targets=None, imgs_path=None, human_bboxes=None, obj_bboxes=None, original_imgs=None):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
         features, pos = self.backbone(samples)
@@ -180,6 +188,102 @@ class HOICLIP(nn.Module):
 
         outputs_sub_coord = self.hum_bbox_embed(h_hs).sigmoid()
         outputs_obj_coord = self.obj_bbox_embed(o_hs).sigmoid()
+        
+        # (decoder_layer, bs, quries, 256), (decoder_layer, bs, quries, 256), (decoder_layer, bs, quries, 512), (bs, quries, 512), (bs, 1 , 600), (bs, 50, 512)
+
+        ## train stage ##
+        human_features = []
+        for idx, boxes in enumerate(human_bboxes):
+            actor = []
+            for person_bbox in boxes:
+                w,h = original_imgs[idx].size
+                person_xyxy = person_bbox * torch.tensor([w, h, w, h], dtype=torch.float32).to(device)
+                person_xyxy = box_cxcywh_to_xyxy(person_xyxy)
+                x1, y1, x2, y2 = round(person_xyxy[0].item()), round(person_xyxy[1].item()), round(person_xyxy[2].item()), round(person_xyxy[3].item())
+                
+                wanted = original_imgs[idx].crop((x1, y1, x2, y2))
+                actor.append(self.preprocess(wanted))
+                
+            wanted_features = torch.tensor(np.stack(actor)).to(device)
+            wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
+
+            human_features.append(wanted_features)
+
+        obj_features = []
+        for idx, boxes in enumerate(obj_bboxes):
+            objs = []
+            for obj_bbox in boxes:
+                w,h = original_imgs[idx].size
+                obj_xyxy = obj_bbox * torch.tensor([w, h, w, h], dtype=torch.float32).to(device)
+                obj_xyxy = box_cxcywh_to_xyxy(obj_xyxy)
+                x1, y1, x2, y2 = round(obj_xyxy[0].item()), round(obj_xyxy[1].item()), round(obj_xyxy[2].item()), round(obj_xyxy[3].item())
+                wanted = original_imgs[idx].crop((x1, y1, x2, y2))
+                objs.append(self.preprocess(wanted))
+            wanted_features = torch.tensor(np.stack(objs)).to(device)
+            wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
+
+            obj_features.append(wanted_features)
+
+        ############################################
+
+
+
+        # ##  test stage ##
+        # human_bboxes, obj_bboxes = self.dino.catch(obj_classes=OBJ_IDX_TO_OBJ_NAME, imgs_path=imgs_path,)
+
+        # ##################
+
+
+        ######### Interaction features ##########
+        # Strategy: CA<Person, object> then CA<PO, Scene>, dimention should be same as inter_hs
+        # By without queries, we should have not followed <quries, dimention> rule
+
+        # should consider the case about: 
+        # if person are zero
+        # if obj are zero
+        scene = self.clip_model.encode_image(clip_input)[0].float()
+
+        person_objects = []
+        logits = []
+        for idx, people in enumerate(human_features):
+            if (len(people) == 0 or len(obj_features[idx]) == 0):
+                logit.append(torch.zeros((0, 512), dtype=torch.float32))
+            else:
+                ### Do corss attention ###
+                person_features = people.unsqueeze(1) # people ,1 , 512
+                object_features= obj_features[idx].unsqueeze(0) # 1, objs, 512
+                pairs = torch.cat((person_features, object_features.repeat(person_features.size(0), 1, 1)), dim=1) # person, object+1, 512
+
+                attn_output, _ = self.MHA(pairs, pairs, pairs) # self attention
+                pair_features = attn_output[:, 1:, :].contiguous().view(-1, person_features.size(-1)) # (person, object, 512) -> (person X objects, 512)
+
+                interaction = self.MHA(pair_features, scene[idx].unsqueeze(0), scene[idx].unsqueeze(0))[0]
+
+                logits.append(interaction) 
+
+                # Do classify
+
+        # So it is like there are <numbers> X <numbers> interaction features depends on how many people and how many objects in this frame 
+        #########################################
+
+        ####### Do object class fc #########
+        # obj_logits = []
+        # for each_object in obj_features:
+        #     print(self.obj_visual_projection(each_object).shape)
+        #     obj_logits.append(self.obj_visual_projection(each_object).cpu())
+        # exit()
+        # obj_logits = torch.tensor(np.stack(obj_logits)).to(device)
+        # print(obj_logits.shape)
+        # exit()
+        ####################################
+
+        # ####### Do hoi class fc ############
+        action_logits = []
+        for each_action in logits:
+            action_logits.append(self.logit_scale.exp() * self.visual_projection(each_action))
+
+        
+        # ####################################
 
         if self.args.with_obj_clip_label:
             obj_logit_scale = self.obj_logit_scale.exp()
@@ -209,8 +313,9 @@ class HOICLIP(nn.Module):
             inter_hs = self.hoi_class_fc(inter_hs)
             outputs_inter_hs = inter_hs.clone()
             outputs_hoi_class = self.hoi_class_embedding(inter_hs)
-
-        out = {'pred_hoi_logits': outputs_hoi_class[-1], 'pred_obj_logits': outputs_obj_class[-1],
+        
+        print(outputs_hoi_class[-1].shape, outputs_obj_class[-1].shape)
+        out = {'pred_hoi_logits': action_logits, 'pred_obj_logits': outputs_obj_class[-1],
                'pred_sub_boxes': outputs_sub_coord[-1], 'pred_obj_boxes': outputs_obj_coord[-1], 'clip_visual': clip_visual,
                'clip_cls_feature': clip_cls_feature, 'hoi_feature': inter_hs[-1], 'clip_logits': clip_hoi_score}
 
@@ -331,17 +436,43 @@ class SetCriterionHOI(nn.Module):
     def loss_hoi_labels(self, outputs, targets, indices, num_interactions, topk=5):
         assert 'pred_hoi_logits' in outputs
         src_logits = outputs['pred_hoi_logits']
-        dtype = src_logits.dtype
+        # dtype = src_logits.dtype
+        # idx = self._get_src_permutation_idx(indices)
 
-        idx = self._get_src_permutation_idx(indices)
+        # for each batch:
+        # for i in src_logits:
+        acc = 0.0
+        for tid, each_target in enumerate(targets):
+            hoi_labels_gt = each_target['hoi_labels']
+            tgt_idx = torch.where(hoi_labels_gt == 1)[0]
+            print(tgt_idx)
+            # print(src_logits[tid][0])
+            # exit()
+            # src_logits[idx].topk(topk, 1, True, True)
+            pre = _sigmoid(src_logits[tid])
+            pre = pre.topk(topk, 1, True, True)[1]
+            acc_pred = 0.0
+            for tgt_rel in tgt_idx:
+                print(pre)
+                print(tgt_rel)
+                acc_pred += (tgt_rel in pre)
+            acc += acc_pred / len(tgt_idx)
+        rel_labels_error = 100 - 100 * acc / max(len(targets), 1)
+        print(rel_labels_error)
+
+
         target_classes_o = torch.cat([t['hoi_labels'][J] for t, (_, J) in zip(targets, indices)]).to(dtype)
         target_classes = torch.zeros_like(src_logits)
         target_classes[idx] = target_classes_o
         src_logits = _sigmoid(src_logits)
+        
         loss_hoi_ce = self._neg_loss(src_logits, target_classes, weights=None, alpha=self.alpha)
         losses = {'loss_hoi_labels': loss_hoi_ce}
 
+        print(topk)
+
         _, pred = src_logits[idx].topk(topk, 1, True, True)
+
         acc = 0.0
         for tid, target in enumerate(target_classes_o):
             tgt_idx = torch.where(target == 1)[0]
@@ -349,6 +480,9 @@ class SetCriterionHOI(nn.Module):
                 continue
             acc_pred = 0.0
             for tgt_rel in tgt_idx:
+                print(tgt_rel)
+                print(pred[tid])
+                exit()
                 acc_pred += (tgt_rel in pred[tid])
             acc += acc_pred / len(tgt_idx)
         rel_labels_error = 100 - 100 * acc / max(len(target_classes_o), 1)
@@ -438,8 +572,8 @@ class SetCriterionHOI(nn.Module):
         if 'pred_hoi_logits' in outputs.keys():
             loss_map = {
                 'hoi_labels': self.loss_hoi_labels,
-                'obj_labels': self.loss_obj_labels,
-                'sub_obj_boxes': self.loss_sub_obj_boxes,
+                # 'obj_labels': self.loss_obj_labels,
+                # 'sub_obj_boxes': self.loss_sub_obj_boxes,
                 'feats_mimic': self.mimic_loss,
                 'rec_loss': self.reconstruction_loss
             }
@@ -457,14 +591,15 @@ class SetCriterionHOI(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
+        # indices = self.matcher(outputs_without_aux, targets)
+        indices = [0,0]
 
         num_interactions = sum(len(t['hoi_labels']) for t in targets)
-        num_interactions = torch.as_tensor([num_interactions], dtype=torch.float,
-                                           device=next(iter(outputs.values())).device)
-        if is_dist_avail_and_initialized():
-            torch.distributed.all_reduce(num_interactions)
-        num_interactions = torch.clamp(num_interactions / get_world_size(), min=1).item()
+        # num_interactions = torch.as_tensor([num_interactions], dtype=torch.float,
+        #                                    device=next(iter(outputs.values())).device)
+        # if is_dist_avail_and_initialized():
+        #     torch.distributed.all_reduce(num_interactions)
+        # num_interactions = torch.clamp(num_interactions / get_world_size(), min=1).item()
 
         # Compute all the requested losses
         losses = {}

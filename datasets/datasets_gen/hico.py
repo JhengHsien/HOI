@@ -117,6 +117,7 @@ class HICODetection(torch.utils.data.Dataset):
         img_anno = self.annotations[self.ids[idx]]
 
         img = Image.open(self.img_folder / img_anno['file_name']).convert('RGB')
+        original_img = img
         w, h = img.size
 
         if self.img_set == 'train' and len(img_anno['annotations']) > self.num_queries:
@@ -219,7 +220,7 @@ class HICODetection(torch.utils.data.Dataset):
                 hois.append((hoi['subject_id'], hoi['object_id'], self._valid_verb_ids.index(hoi['category_id'])))
             target['hois'] = torch.as_tensor(hois, dtype=torch.int64)
 
-        return img, target
+        return img, target, img_anno['file_name'], target['sub_boxes'], target['obj_boxes'], original_img
 
     def set_rare_hois(self, anno_file):
         with open(anno_file, 'r') as f:

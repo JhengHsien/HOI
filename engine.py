@@ -43,13 +43,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # debug
     debug_count = 0
     step = 0
-    for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    for samples, targets, imgs_path, human, objs, original_imgs in metric_logger.log_every(data_loader, print_freq, header):
         if no_training:
             samples = samples.to(device)
             targets = [{k: v.to(device) for k, v in t.items() if k != 'filename' and k != 'raw_img'} for t in targets]
             clip_img = torch.stack([v['clip_inputs'] for v in targets])
             # with autocast():
-            obj_feature, hoi_feature, verb_feature = model(samples, clip_input=clip_img, targets=targets)
+            obj_feature, hoi_feature, verb_feature = model(samples, clip_input=clip_img, targets=targets, imgs_path=imgs_path, human_bboxes=human, obj_bboxes=objs, original_imgs=original_imgs)
 
             metric_logger.update(loss=0)
             if hasattr(criterion, 'loss_labels'):
@@ -68,7 +68,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             t.update(f)
         clip_img = torch.stack([v['clip_inputs'] for v in targets])
 
-        outputs = model(samples, clip_input=clip_img, targets=targets)
+        outputs = model(samples, clip_input=clip_img, targets=targets, imgs_path= imgs_path, human_bboxes=human, obj_bboxes=objs, original_imgs=original_imgs)
         loss_dict = criterion(outputs, targets)
 
         weight_dict = criterion.weight_dict
