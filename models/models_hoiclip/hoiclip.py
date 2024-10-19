@@ -249,17 +249,16 @@ class HOICLIP(nn.Module):
             if (len(people) == 0 or len(obj_features[idx]) == 0):
                 logit.append(torch.zeros((0, 512), dtype=torch.float32))
             else:
-                ### Do corss attention ###
-                person_features = people.unsqueeze(1) # people ,1 , 512
-                object_features= obj_features[idx].unsqueeze(0) # 1, objs, 512
-                pairs = torch.cat((person_features, object_features.repeat(person_features.size(0), 1, 1)), dim=1) # person, object+1, 512
-
-                attn_output, _ = self.MHA(pairs, pairs, pairs) # self attention
-                pair_features = attn_output[:, 1:, :].contiguous().view(-1, person_features.size(-1)) # (person, object, 512) -> (person X objects, 512)
-
-                interaction = self.MHA(pair_features, scene[idx].unsqueeze(0), scene[idx].unsqueeze(0))[0]
-
-                logits.append(interaction) 
+                all_pair = []
+                for each_person in people:
+                    ### Do corss attention ###
+                    for each_object in obj_features[idx]:
+                        attn_output, _ = self.MHA(each_person.unsqueeze(0), each_object.unsqueeze(0), each_object.unsqueeze(0)) # self attention
+                        interaction = self.MHA(attn_output, scene[idx].unsqueeze(0), scene[idx].unsqueeze(0))[0] # (1,512)
+                        all_pair.append(interaction)
+                
+                ho_interaction = torch.stack(all_pair, dim=1).squeeze(0).to(device)
+                logits.append(ho_interaction) 
 
                 # Do classify
 
@@ -269,20 +268,16 @@ class HOICLIP(nn.Module):
         ####### Do object class fc #########
         # obj_logits = []
         # for each_object in obj_features:
-        #     print(self.obj_visual_projection(each_object).shape)
-        #     obj_logits.append(self.obj_visual_projection(each_object).cpu())
-        # exit()
-        # obj_logits = torch.tensor(np.stack(obj_logits)).to(device)
-        # print(obj_logits.shape)
-        # exit()
+        #     obj_logits.append(self.obj_logit_scale.exp() * self.obj_visual_projection(each_object))
         ####################################
 
         # ####### Do hoi class fc ############
         action_logits = []
-        for each_action in logits:
-            action_logits.append(self.logit_scale.exp() * self.visual_projection(each_action))
-
-        
+        for each_frame in logits:
+            frame_logits = []
+            for each_action in each_frame:
+                frame_logits.append(self.logit_scale.exp() * self.visual_projection(each_action))
+            action_logits.append(frame_logits) 
         # ####################################
 
         if self.args.with_obj_clip_label:
@@ -314,22 +309,27 @@ class HOICLIP(nn.Module):
             outputs_inter_hs = inter_hs.clone()
             outputs_hoi_class = self.hoi_class_embedding(inter_hs)
         
-        print(outputs_hoi_class[-1].shape, outputs_obj_class[-1].shape)
-        out = {'pred_hoi_logits': action_logits, 'pred_obj_logits': outputs_obj_class[-1],
-               'pred_sub_boxes': outputs_sub_coord[-1], 'pred_obj_boxes': outputs_obj_coord[-1], 'clip_visual': clip_visual,
-               'clip_cls_feature': clip_cls_feature, 'hoi_feature': inter_hs[-1], 'clip_logits': clip_hoi_score}
+        # out = {'pred_hoi_logits': action_logits, 'pred_obj_logits': outputs_obj_class[-1],
+        #        'pred_sub_boxes': outputs_sub_coord[-1], 'pred_obj_boxes': outputs_obj_coord[-1], 'clip_visual': clip_visual,
+        #        'clip_cls_feature': clip_cls_feature, 'hoi_feature': inter_hs[-1], 'clip_logits': clip_hoi_score}
+        out = {'pred_hoi_logits': action_logits,
+                # 'pred_obj_logits': obj_logits,
+                'pred_obj_boxes': human_bboxes,
+                'pred_sub_boxes': obj_bboxes,
+               'hoi_feature': logits}       
 
-        if self.args.with_mimic:
-            out['inter_memory'] = outputs_inter_hs[-1]
-        if self.aux_loss:
-            if self.args.with_mimic:
-                aux_mimic = outputs_inter_hs
-            else:
-                aux_mimic = None
+        # if self.args.with_mimic:
+        #     out['inter_memory'] = outputs_inter_hs[-1]
+        # if self.aux_loss:
+        #     if self.args.with_mimic:
+        #         aux_mimic = outputs_inter_hs
+        #     else:
+        #         aux_mimic = None
 
-            out['aux_outputs'] = self._set_aux_loss_triplet(outputs_hoi_class, outputs_obj_class,
-                                                            outputs_sub_coord, outputs_obj_coord,
-                                                            aux_mimic)
+        #     # out['aux_outputs'] = self._set_aux_loss_triplet(outputs_hoi_class, outputs_obj_class,
+        #     #                                                 outputs_sub_coord, outputs_obj_coord,
+        #     #                                                 aux_mimic)
+        #     out['aux_outputs'] = self._set_aux_loss_triplet(outputs_hoi_class, aux_mimic)                                                
 
         return out
 
@@ -340,9 +340,9 @@ class HOICLIP(nn.Module):
         if outputs_hoi_class.shape[0] == 1:
             outputs_hoi_class = outputs_hoi_class.repeat(self.dec_layers, 1, 1, 1)
         aux_outputs = {'pred_hoi_logits': outputs_hoi_class[-self.dec_layers: -1],
-                       'pred_obj_logits': outputs_obj_class[-self.dec_layers: -1],
-                       'pred_sub_boxes': outputs_sub_coord[-self.dec_layers: -1],
-                       'pred_obj_boxes': outputs_obj_coord[-self.dec_layers: -1],
+                    #    'pred_obj_logits': outputs_obj_class[-self.dec_layers: -1],
+                    #    'pred_sub_boxes': outputs_sub_coord[-self.dec_layers: -1],
+                    #    'pred_obj_boxes': outputs_obj_coord[-self.dec_layers: -1],
                        }
         if outputs_inter_hs is not None:
             aux_outputs['inter_memory'] = outputs_inter_hs[-self.dec_layers: -1]
@@ -393,14 +393,20 @@ class SetCriterionHOI(nn.Module):
         self.alpha = args.alpha
 
     def loss_obj_labels(self, outputs, targets, indices, num_interactions, log=True):
-        assert 'pred_obj_logits' in outputs
+        # assert 'pred_obj_logits' in outputs
         src_logits = outputs['pred_obj_logits']
 
-        idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t['obj_labels'][J] for t, (_, J) in zip(targets, indices)])
-        target_classes = torch.full(src_logits.shape[:2], self.num_obj_classes,
-                                    dtype=torch.int64, device=src_logits.device)
-        target_classes[idx] = target_classes_o
+        # idx = self._get_src_permutation_idx(indices)
+        # target_classes_o = torch.cat([t['obj_labels'][J] for t, (_, J) in zip(targets, indices)])
+        # target_classes = torch.full(src_logits.shape[:2], 0,
+        #                             dtype=torch.int64, device=src_logits.device)
+
+        for tid, each_target in enumerate(targets):
+            obj_labels_gt = each_target['obj_labels']
+            pre = _sigmoid(src_logits[tid])
+            pre = pre.topk(len(obj_labels_gt), 1, True, True)[0].float()
+            loss_obj_ce = F.cross_entropy(pre, obj_labels_gt, self.empty_weight)
+
 
         loss_obj_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
         losses = {'loss_obj_ce': loss_obj_ce}
@@ -434,8 +440,10 @@ class SetCriterionHOI(nn.Module):
         return losses
 
     def loss_hoi_labels(self, outputs, targets, indices, num_interactions, topk=5):
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         assert 'pred_hoi_logits' in outputs
-        src_logits = outputs['pred_hoi_logits']
+        src_logits = outputs['pred_hoi_logits'] # I have N + M predicts
+        print(targets[0]['hoi_labels'].shape) # means there are 4 labels
         # dtype = src_logits.dtype
         # idx = self._get_src_permutation_idx(indices)
 
@@ -443,51 +451,57 @@ class SetCriterionHOI(nn.Module):
         # for i in src_logits:
         acc = 0.0
         for tid, each_target in enumerate(targets):
-            hoi_labels_gt = each_target['hoi_labels']
-            tgt_idx = torch.where(hoi_labels_gt == 1)[0]
-            print(tgt_idx)
-            # print(src_logits[tid][0])
-            # exit()
-            # src_logits[idx].topk(topk, 1, True, True)
-            pre = _sigmoid(src_logits[tid])
-            pre = pre.topk(topk, 1, True, True)[1]
-            acc_pred = 0.0
-            for tgt_rel in tgt_idx:
-                print(pre)
-                print(tgt_rel)
-                acc_pred += (tgt_rel in pre)
-            acc += acc_pred / len(tgt_idx)
-        rel_labels_error = 100 - 100 * acc / max(len(targets), 1)
-        print(rel_labels_error)
 
+            # collect target_numbers perdictions
+            batch_pred = []
+            for each_pred in src_logits[tid]:
+                pred = _sigmoid(each_pred)
+                batch_pred.append(pred)
+            batch_pred = torch.stack(batch_pred).to(device)
+            for each_indice in indices:
+                for pair in len(each_target['hoi_labels']):
+                    idx = (each_indice[0][pair] +1 * each_indice[1][pair] +1)
+                    true_pred = 
+            loss_hoi_ce = self._neg_loss(batch_pred, each_target['hoi_labels'], weights=None, alpha=self.alpha)
+            exit()
+            # acc_pred = 0.0
+            # for tgt_rel in tgt_idx:
+            #     acc_pred += (tgt_rel in pre)
+            # acc += acc_pred / len(tgt_idx)
 
-        target_classes_o = torch.cat([t['hoi_labels'][J] for t, (_, J) in zip(targets, indices)]).to(dtype)
-        target_classes = torch.zeros_like(src_logits)
-        target_classes[idx] = target_classes_o
-        src_logits = _sigmoid(src_logits)
         
-        loss_hoi_ce = self._neg_loss(src_logits, target_classes, weights=None, alpha=self.alpha)
-        losses = {'loss_hoi_labels': loss_hoi_ce}
+        rel_labels_error = 100 - 100 * acc / max(len(targets), 1)
+        losses = {}
+        losses['loss_hoi_labels'] = torch.from_numpy(np.array(
+            rel_labels_error)).to(device).float()
 
-        print(topk)
+        # target_classes_o = torch.cat([t['hoi_labels'][J] for t, (_, J) in zip(targets, indices)]).to(dtype)
+        # target_classes = torch.zeros_like(src_logits)
+        # target_classes[idx] = target_classes_o
+        # src_logits = _sigmoid(src_logits)
+        
+        # loss_hoi_ce = self._neg_loss(src_logits, target_classes, weights=None, alpha=self.alpha)
+        # losses = {'loss_hoi_labels': loss_hoi_ce}
 
-        _, pred = src_logits[idx].topk(topk, 1, True, True)
+        # print(topk)
 
-        acc = 0.0
-        for tid, target in enumerate(target_classes_o):
-            tgt_idx = torch.where(target == 1)[0]
-            if len(tgt_idx) == 0:
-                continue
-            acc_pred = 0.0
-            for tgt_rel in tgt_idx:
-                print(tgt_rel)
-                print(pred[tid])
-                exit()
-                acc_pred += (tgt_rel in pred[tid])
-            acc += acc_pred / len(tgt_idx)
-        rel_labels_error = 100 - 100 * acc / max(len(target_classes_o), 1)
-        losses['hoi_class_error'] = torch.from_numpy(np.array(
-            rel_labels_error)).to(src_logits.device).float()
+        # _, pred = src_logits[idx].topk(topk, 1, True, True)
+
+        # acc = 0.0
+        # for tid, target in enumerate(target_classes_o):
+        #     tgt_idx = torch.where(target == 1)[0]
+        #     if len(tgt_idx) == 0:
+        #         continue
+        #     acc_pred = 0.0
+        #     for tgt_rel in tgt_idx:
+        #         print(tgt_rel)
+        #         print(pred[tid])
+        #         exit()
+        #         acc_pred += (tgt_rel in pred[tid])
+        #     acc += acc_pred / len(tgt_idx)
+        # rel_labels_error = 100 - 100 * acc / max(len(target_classes_o), 1)
+        # losses['hoi_class_error'] = torch.from_numpy(np.array(
+        #     rel_labels_error)).to(src_logits.device).float()
         return losses
 
     def loss_sub_obj_boxes(self, outputs, targets, indices, num_interactions):
@@ -574,8 +588,11 @@ class SetCriterionHOI(nn.Module):
                 'hoi_labels': self.loss_hoi_labels,
                 # 'obj_labels': self.loss_obj_labels,
                 # 'sub_obj_boxes': self.loss_sub_obj_boxes,
-                'feats_mimic': self.mimic_loss,
-                'rec_loss': self.reconstruction_loss
+                # 'feats_mimic': self.mimic_loss,
+                # 'obj_labels': 0,
+                # 'sub_obj_boxes': 0,
+                # 'feats_mimic': 0,
+                # 'rec_loss': self.reconstruction_loss
             }
         else:
             loss_map = {
@@ -584,6 +601,7 @@ class SetCriterionHOI(nn.Module):
                 'verb_labels': self.loss_verb_labels,
                 'sub_obj_boxes': self.loss_sub_obj_boxes,
             }
+
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num, **kwargs)
 
@@ -591,8 +609,9 @@ class SetCriterionHOI(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        # indices = self.matcher(outputs_without_aux, targets)
-        indices = [0,0]
+        sub_indices, obj_indices = self.matcher(outputs_without_aux, targets)
+        indices = (sub_indices, obj_indices)
+        # indices = [0,0]
 
         num_interactions = sum(len(t['hoi_labels']) for t in targets)
         # num_interactions = torch.as_tensor([num_interactions], dtype=torch.float,
@@ -610,6 +629,7 @@ class SetCriterionHOI(nn.Module):
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
                 indices = self.matcher(aux_outputs, targets)
+   
                 for loss in self.losses:
                     kwargs = {}
                     if loss =='rec_loss':
@@ -633,40 +653,43 @@ class PostProcessHOITriplet(nn.Module):
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
         out_hoi_logits = outputs['pred_hoi_logits']
-        out_obj_logits = outputs['pred_obj_logits']
+        # out_obj_logits = outputs['pred_obj_logits']
         out_sub_boxes = outputs['pred_sub_boxes']
         out_obj_boxes = outputs['pred_obj_boxes']
-        clip_visual = outputs['clip_visual']
-        clip_logits = outputs['clip_logits']
+        # clip_visual = outputs['clip_visual']
+        # clip_logits = outputs['clip_logits']
 
         assert len(out_hoi_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
         hoi_scores = out_hoi_logits.sigmoid()
-        obj_scores = out_obj_logits.sigmoid()
-        obj_labels = F.softmax(out_obj_logits, -1)[..., :-1].max(-1)[1]
+        # obj_scores = out_obj_logits.sigmoid()
+        # obj_labels = F.softmax(out_obj_logits, -1)[..., :-1].max(-1)[1]
 
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(hoi_scores.device)
-        sub_boxes = box_cxcywh_to_xyxy(out_sub_boxes)
-        sub_boxes = sub_boxes * scale_fct[:, None, :]
-        obj_boxes = box_cxcywh_to_xyxy(out_obj_boxes)
-        obj_boxes = obj_boxes * scale_fct[:, None, :]
+        # sub_boxes = box_cxcywh_to_xyxy(out_sub_boxes)
+        # sub_boxes = sub_boxes * scale_fct[:, None, :]
+        # obj_boxes = box_cxcywh_to_xyxy(out_obj_boxes)
+        # obj_boxes = obj_boxes * scale_fct[:, None, :]
 
         results = []
         for index in range(len(hoi_scores)):
-            hs, os, ol, sb, ob = hoi_scores[index], obj_scores[index], obj_labels[index], sub_boxes[index], obj_boxes[
-                index]
-            sl = torch.full_like(ol, self.subject_category_id)
-            l = torch.cat((sl, ol))
+            # hs, os, ol, sb, ob = hoi_scores[index], obj_scores[index], obj_labels[index], sub_boxes[index], obj_boxes[
+            #     index]
+            hs, sb, ob = hoi_scores[index],sub_boxes[index], obj_boxes[index]
+            # sl = torch.full_like(ol, self.subject_category_id)
+            # l = torch.cat((sl, ol))
             b = torch.cat((sb, ob))
             results.append({'labels': l.to('cpu'), 'boxes': b.to('cpu')})
+            # results.append({'labels': l.to('cpu')})
 
             ids = torch.arange(b.shape[0])
+            print(ids)
 
-            results[-1].update({'hoi_scores': hs.to('cpu'), 'obj_scores': os.to('cpu'), 'clip_visual': clip_visual[index].to('cpu'),
-                                'sub_ids': ids[:ids.shape[0] // 2], 'obj_ids': ids[ids.shape[0] // 2:], 'clip_logits': clip_logits[index].to('cpu')})
-
+            # results[-1].update({'hoi_scores': hs.to('cpu'), 'obj_scores': os.to('cpu'), 'clip_visual': clip_visual[index].to('cpu'),
+            #                     'sub_ids': ids[:ids.shape[0] // 2], 'obj_ids': ids[ids.shape[0] // 2:], 'clip_logits': clip_logits[index].to('cpu')})
+            results[-1].update({'hoi_scores': hs.to('cpu'), 'sub_ids': ids[:ids.shape[0] // 2], 'obj_ids': ids[ids.shape[0] // 2:]})
         return results
 
 
@@ -709,12 +732,12 @@ def build(args):
         for i in range(args.dec_layers - 1):
             aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
-    losses = ['hoi_labels', 'obj_labels', 'sub_obj_boxes']
-    if args.with_mimic:
-        losses.append('feats_mimic')
+    losses = ['hoi_labels']
+    # if args.with_mimic:
+    #     losses.append('feats_mimic')
 
-    if args.with_rec_loss:
-        losses.append('rec_loss')
+    # if args.with_rec_loss:
+    #     losses.append('rec_loss')
 
     criterion = SetCriterionHOI(args.num_obj_classes, args.num_queries, args.num_verb_classes, matcher=matcher,
                                 weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,

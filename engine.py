@@ -83,6 +83,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
 
         loss_value = losses_reduced_scaled.item()
+        loss_value = losses_reduced_scaled
         # print(loss_value)
         # sys.exit()
 
