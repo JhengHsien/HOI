@@ -16,6 +16,8 @@ from ..backbone import build_backbone
 from ..matcher import build_matcher
 from .gen import build_gen
 from .dino import dino
+from .ca import CrossAttention
+from .softmax_focal import SoftmaxFocalLoss
 from datasets.static_hico import OBJ_IDX_TO_OBJ_NAME
 
 
@@ -30,27 +32,29 @@ class HOICLIP(nn.Module):
 
         self.args = args
         self.num_queries = num_queries
-        self.transformer = transformer
-        hidden_dim = transformer.d_model
-        self.query_embed_h = nn.Embedding(num_queries, hidden_dim)
-        self.query_embed_o = nn.Embedding(num_queries, hidden_dim)
-        self.pos_guided_embedd = nn.Embedding(num_queries, hidden_dim)
-        self.hum_bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.obj_bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.inter2verb = MLP(args.clip_embed_dim, args.clip_embed_dim // 2, args.clip_embed_dim, 3)
-        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
-        self.backbone = backbone
+        # self.transformer = transformer
+        # hidden_dim = transformer.d_model
+        # self.query_embed_h = nn.Embedding(num_queries, hidden_dim)
+        # self.query_embed_o = nn.Embedding(num_queries, hidden_dim)
+        # self.pos_guided_embedd = nn.Embedding(num_queries, hidden_dim)
+        # self.hum_bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        # self.obj_bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        # self.inter2verb = MLP(args.clip_embed_dim, args.clip_embed_dim // 2, args.clip_embed_dim, 3)
+        # self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        # self.backbone = backbone
         self.aux_loss = aux_loss
         self.dec_layers = self.args.dec_layers
 
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        self.obj_logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        # self.obj_logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
         self.clip_model, self.preprocess = clip.load(self.args.clip_model)
 
         # Dino
         self.dino = dino()
         # Cross Attention
-        self.MHA = nn.MultiheadAttention(embed_dim=512, num_heads=8)
+        # self.MHA = nn.MultiheadAttention(embed_dim=512, num_heads=8)
+        self.CrossAttention = CrossAttention(input_dim=512, key_dim=512, value_dim=512)
+        self.projector = nn.Linear(512, 512)
 
         if self.args.dataset_file == 'hico':
             hoi_text_label = hico_text_label
@@ -66,8 +70,10 @@ class HOICLIP(nn.Module):
         num_obj_classes = len(obj_text) - 1  # del nothing
         self.clip_visual_proj = v_linear_proj_weight
 
+        self.text_embedding = train_clip_label
+
         self.hoi_class_fc = nn.Sequential(
-            nn.Linear(hidden_dim, args.clip_embed_dim),
+            nn.Linear(512, args.clip_embed_dim),
             nn.LayerNorm(args.clip_embed_dim),
         )
 
@@ -81,61 +87,61 @@ class HOICLIP(nn.Module):
             select_idx = list(set([i for i in range(600)]) - set(unseen_index_list))
             for idx, v in enumerate(HOI_IDX_TO_ACT_IDX):
                 verb2hoi_proj[v][idx] = 1.0
-            self.verb2hoi_proj = nn.Parameter(verb2hoi_proj[:, select_idx], requires_grad=False)
-            self.verb2hoi_proj_eval = nn.Parameter(verb2hoi_proj, requires_grad=False)
+            # self.verb2hoi_proj = nn.Parameter(verb2hoi_proj[:, select_idx], requires_grad=False)
+            # self.verb2hoi_proj_eval = nn.Parameter(verb2hoi_proj, requires_grad=False)
 
-            self.verb_projection = nn.Linear(args.clip_embed_dim, 117, bias=False)
-            self.verb_projection.weight.data = torch.load(args.verb_pth, map_location='cpu')
-            self.verb_weight = args.verb_weight
+            # self.verb_projection = nn.Linear(args.clip_embed_dim, 117, bias=False)
+            # self.verb_projection.weight.data = torch.load(args.verb_pth, map_location='cpu')
+            # self.verb_weight = args.verb_weight
         else:
             verb2hoi_proj = torch.zeros(29, 263)
             for i in vcoco_hoi_text_label.keys():
                 verb2hoi_proj[i[0]][i[1]] = 1
 
-            self.verb2hoi_proj = nn.Parameter(verb2hoi_proj, requires_grad=False)
-            self.verb_projection = nn.Linear(args.clip_embed_dim, 29, bias=False)
-            self.verb_projection.weight.data = torch.load(args.verb_pth, map_location='cpu')
-            self.verb_weight = args.verb_weight
+            # self.verb2hoi_proj = nn.Parameter(verb2hoi_proj, requires_grad=False)
+            # self.verb_projection = nn.Linear(args.clip_embed_dim, 29, bias=False)
+            # self.verb_projection.weight.data = torch.load(args.verb_pth, map_location='cpu')
+            # self.verb_weight = args.verb_weight
 
-        if args.with_clip_label:
-            if args.fix_clip_label:
-                self.visual_projection = nn.Linear(args.clip_embed_dim, len(hoi_text), bias=False)
-                self.visual_projection.weight.data = train_clip_label / train_clip_label.norm(dim=-1, keepdim=True)
-                for i in self.visual_projection.parameters():
-                    i.require_grads = False
-            else:
-                self.visual_projection = nn.Linear(args.clip_embed_dim, len(hoi_text))
-                self.visual_projection.weight.data = train_clip_label / train_clip_label.norm(dim=-1, keepdim=True)
+        # if args.with_clip_label:
+        #     if args.fix_clip_label:
+        #         self.visual_projection = nn.Linear(args.clip_embed_dim, len(hoi_text), bias=False)
+        #         self.visual_projection.weight.data = train_clip_label / train_clip_label.norm(dim=-1, keepdim=True)
+        #         for i in self.visual_projection.parameters():
+        #             i.require_grads = False
+        #     else:
+        #         self.visual_projection = nn.Linear(args.clip_embed_dim, len(hoi_text))
+        #         self.visual_projection.weight.data = train_clip_label / train_clip_label.norm(dim=-1, keepdim=True)
 
-            if self.args.dataset_file == 'hico' and self.args.zero_shot_type != 'default':
-                self.eval_visual_projection = nn.Linear(args.clip_embed_dim, 600, bias=False)
-                self.eval_visual_projection.weight.data = clip_label / clip_label.norm(dim=-1, keepdim=True)
-        else:
-            self.hoi_class_embedding = nn.Linear(args.clip_embed_dim, len(hoi_text))
+        #     if self.args.dataset_file == 'hico' and self.args.zero_shot_type != 'default':
+        #         self.eval_visual_projection = nn.Linear(args.clip_embed_dim, 600, bias=False)
+        #         self.eval_visual_projection.weight.data = clip_label / clip_label.norm(dim=-1, keepdim=True)
+        # else:
+        #     self.hoi_class_embedding = nn.Linear(args.clip_embed_dim, len(hoi_text))
 
-        if args.with_obj_clip_label:
-            self.obj_class_fc = nn.Sequential(
-                nn.Linear(hidden_dim, args.clip_embed_dim),
-                nn.LayerNorm(args.clip_embed_dim),
-            )
-            if args.fix_clip_label:
-                self.obj_visual_projection = nn.Linear(args.clip_embed_dim, num_obj_classes + 1, bias=False)
-                self.obj_visual_projection.weight.data = obj_clip_label / obj_clip_label.norm(dim=-1, keepdim=True)
-                for i in self.obj_visual_projection.parameters():
-                    i.require_grads = False
-            else:
-                self.obj_visual_projection = nn.Linear(args.clip_embed_dim, num_obj_classes + 1)
-                self.obj_visual_projection.weight.data = obj_clip_label / obj_clip_label.norm(dim=-1, keepdim=True)
-        else:
-            self.obj_class_embed = nn.Linear(hidden_dim, num_obj_classes + 1)
+        # if args.with_obj_clip_label:
+        #     self.obj_class_fc = nn.Sequential(
+        #         nn.Linear(hidden_dim, args.clip_embed_dim),
+        #         nn.LayerNorm(args.clip_embed_dim),
+        #     )
+        #     if args.fix_clip_label:
+        #         self.obj_visual_projection = nn.Linear(args.clip_embed_dim, num_obj_classes + 1, bias=False)
+        #         self.obj_visual_projection.weight.data = obj_clip_label / obj_clip_label.norm(dim=-1, keepdim=True)
+        #         for i in self.obj_visual_projection.parameters():
+        #             i.require_grads = False
+        #     else:
+        #         self.obj_visual_projection = nn.Linear(args.clip_embed_dim, num_obj_classes + 1)
+        #         self.obj_visual_projection.weight.data = obj_clip_label / obj_clip_label.norm(dim=-1, keepdim=True)
+        # else:
+        #     self.obj_class_embed = nn.Linear(hidden_dim, num_obj_classes + 1)
 
-        self.transformer.hoi_cls = clip_label / clip_label.norm(dim=-1, keepdim=True)
+        # self.transformer.hoi_cls = clip_label / clip_label.norm(dim=-1, keepdim=True)
 
-        self.hidden_dim = hidden_dim
-        self.reset_parameters()
+        # self.hidden_dim = hidden_dim
+        # self.reset_parameters()
 
-    def reset_parameters(self):
-        nn.init.uniform_(self.pos_guided_embedd.weight)
+    # def reset_parameters(self):
+    #     nn.init.uniform_(self.pos_guided_embedd.weight)
 
     def init_classifier_with_CLIP(self, hoi_text_label, obj_text_label, unseen_index, no_clip_cls_init=False):
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -174,62 +180,84 @@ class HOICLIP(nn.Module):
 
     def forward(self, samples: NestedTensor, is_training=True, clip_input=None, targets=None, imgs_path=None, human_bboxes=None, obj_bboxes=None, original_imgs=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        if not isinstance(samples, NestedTensor):
-            samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        # if not isinstance(samples, NestedTensor):
+        #     samples = nested_tensor_from_tensor_list(samples)
+        # features, pos = self.backbone(samples)
 
-        src, mask = features[-1].decompose()
-        assert mask is not None
-        h_hs, o_hs, inter_hs, clip_cls_feature, clip_hoi_score, clip_visual = self.transformer(self.input_proj(src), mask,
-                                                self.query_embed_h.weight,
-                                                self.query_embed_o.weight,
-                                                self.pos_guided_embedd.weight,
-                                                pos[-1], self.clip_model, self.clip_visual_proj, clip_input)
+        # src, mask = features[-1].decompose()
+        # assert mask is not None
+        # h_hs, o_hs, inter_hs, clip_cls_feature, clip_hoi_score, clip_visual = self.transformer(self.input_proj(src), mask,
+        #                                         self.query_embed_h.weight,
+        #                                         self.query_embed_o.weight,
+        #                                         self.pos_guided_embedd.weight,
+        #                                         pos[-1], self.clip_model, self.clip_visual_proj, clip_input)
 
-        outputs_sub_coord = self.hum_bbox_embed(h_hs).sigmoid()
-        outputs_obj_coord = self.obj_bbox_embed(o_hs).sigmoid()
+        # outputs_sub_coord = self.hum_bbox_embed(h_hs).sigmoid()
+        # outputs_obj_coord = self.obj_bbox_embed(o_hs).sigmoid()
         
         # (decoder_layer, bs, quries, 256), (decoder_layer, bs, quries, 256), (decoder_layer, bs, quries, 512), (bs, quries, 512), (bs, 1 , 600), (bs, 50, 512)
-
+        
         ## train stage ##
         human_features = []
+
         for idx, boxes in enumerate(human_bboxes):
             actor = []
-            for person_bbox in boxes:
-                w,h = original_imgs[idx].size
-                person_xyxy = person_bbox * torch.tensor([w, h, w, h], dtype=torch.float32).to(device)
-                person_xyxy = box_cxcywh_to_xyxy(person_xyxy)
-                x1, y1, x2, y2 = round(person_xyxy[0].item()), round(person_xyxy[1].item()), round(person_xyxy[2].item()), round(person_xyxy[3].item())
-                
-                wanted = original_imgs[idx].crop((x1, y1, x2, y2))
-                actor.append(self.preprocess(wanted))
-                
-            wanted_features = torch.tensor(np.stack(actor)).to(device)
-            wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
+            if (len(boxes) == 0):
+                wanted_features = torch.zeros(1,512).to(device)
+            else:
+                for person_bbox in boxes:
+                    w,h = original_imgs[idx].size
+                    person_xyxy = person_bbox * torch.tensor([w, h, w, h], dtype=torch.float32).to(device)
+                    person_xyxy = box_cxcywh_to_xyxy(person_xyxy)
+                    x1, y1, x2, y2 = round(person_xyxy[0].item()), round(person_xyxy[1].item()), round(person_xyxy[2].item()), round(person_xyxy[3].item())
+                    
+                    # just in case therer are some invalid bboxes
+                    if (x1 >= x2 or y1 >= y2):
+                        x1 = 508
+                        x2 = 599
+                        y1 = 422
+                        y2 = 517
+
+                    wanted = original_imgs[idx].crop((x1, y1, x2, y2))
+                    actor.append(self.preprocess(wanted))
+                    
+                wanted_features = torch.tensor(np.stack(actor)).to(device)
+                wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
 
             human_features.append(wanted_features)
 
+        
         obj_features = []
         for idx, boxes in enumerate(obj_bboxes):
             objs = []
-            for obj_bbox in boxes:
-                w,h = original_imgs[idx].size
-                obj_xyxy = obj_bbox * torch.tensor([w, h, w, h], dtype=torch.float32).to(device)
-                obj_xyxy = box_cxcywh_to_xyxy(obj_xyxy)
-                x1, y1, x2, y2 = round(obj_xyxy[0].item()), round(obj_xyxy[1].item()), round(obj_xyxy[2].item()), round(obj_xyxy[3].item())
-                wanted = original_imgs[idx].crop((x1, y1, x2, y2))
-                objs.append(self.preprocess(wanted))
-            wanted_features = torch.tensor(np.stack(objs)).to(device)
-            wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
+            if (len(boxes) == 0):
+                wanted_features = torch.zeros(1,512).to(device)
+            else:    
+                for obj_bbox in boxes:
+                    w,h = original_imgs[idx].size
+                    obj_xyxy = obj_bbox * torch.tensor([w, h, w, h], dtype=torch.float32).to(device)
+                    obj_xyxy = box_cxcywh_to_xyxy(obj_xyxy)
+                    x1, y1, x2, y2 = round(obj_xyxy[0].item()), round(obj_xyxy[1].item()), round(obj_xyxy[2].item()), round(obj_xyxy[3].item())
+                    
+                    # just in case therer are some invalid bboxes
+                    if (x1 >= x2 or y1 >= y2):
+                        x1 = 33
+                        x2 = 538
+                        y1 = 47
+                        y2 = 414
+                    
+                    wanted = original_imgs[idx].crop((x1, y1, x2, y2))
+                    objs.append(self.preprocess(wanted))
+                wanted_features = torch.tensor(np.stack(objs)).to(device)
+                wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
 
             obj_features.append(wanted_features)
 
         ############################################
 
-
-
         # ##  test stage ##
-        # human_bboxes, obj_bboxes = self.dino.catch(obj_classes=OBJ_IDX_TO_OBJ_NAME, imgs_path=imgs_path,)
+        # if args.eval:
+        #     human_bboxes, obj_bboxes = self.dino.catch(obj_classes=OBJ_IDX_TO_OBJ_NAME, imgs_path=imgs_path,)
 
         # ##################
 
@@ -241,24 +269,45 @@ class HOICLIP(nn.Module):
         # should consider the case about: 
         # if person are zero
         # if obj are zero
-        scene = self.clip_model.encode_image(clip_input)[0].float()
 
+        pair_match = []
+        scene = self.clip_model.encode_image(clip_input)[0].float()
         person_objects = []
         logits = []
-        for idx, people in enumerate(human_features):
+        for idx, people in enumerate(human_features): # 4, 3
             if (len(people) == 0 or len(obj_features[idx]) == 0):
-                logit.append(torch.zeros((0, 512), dtype=torch.float32))
+                logit.append(torch.zeros((1, 512), dtype=torch.float32))
             else:
                 all_pair = []
-                for each_person in people:
-                    ### Do corss attention ###
-                    for each_object in obj_features[idx]:
-                        attn_output, _ = self.MHA(each_person.unsqueeze(0), each_object.unsqueeze(0), each_object.unsqueeze(0)) # self attention
-                        interaction = self.MHA(attn_output, scene[idx].unsqueeze(0), scene[idx].unsqueeze(0))[0] # (1,512)
-                        all_pair.append(interaction)
+                pair_dict = []
                 
-                ho_interaction = torch.stack(all_pair, dim=1).squeeze(0).to(device)
-                logits.append(ho_interaction) 
+                people_nums = people.shape[0]
+                objects_numd = object_feature[idx].shape[0]
+
+
+                po_features = self.CrossAttention(people, objects, objects)
+
+            #     for p_id, each_person in enumerate(people):
+            #         ### Do corss attention ###
+            #         for o_id, each_object in enumerate(obj_features[idx]):
+                        
+            #             # ho_pair_feature = torch.cat((each_person.unsqueeze(0), each_object.unsqueeze(0)), dim=0) # 2,512
+            #             attn_output = self.CrossAttention(scene[idx].unsqueeze(0), ho_pair_feature, ho_pair_feature)
+            #             attn_output = attn_output.squeeze(0)
+            #             attn_output = torch.div(attn_output, 2)
+            #             interaction = torch.add(attn_output, torch.div(scene[idx],2))
+
+            #             all_pair.append(interaction)
+            #             pair_dict.append((p_id, o_id))
+                
+            #     ho_interaction = torch.stack(all_pair).to(device)
+            #     ho_interaction = ho_interaction / ho_interaction.norm(dim=-1, keepdim=True)
+
+            #     logits.append(ho_interaction) 
+            #     pair_match.append(pair_dict)
+
+            # logits = torch.stack(logits).to(device)
+            del attn_output, ho_pair_feature
 
                 # Do classify
 
@@ -273,46 +322,52 @@ class HOICLIP(nn.Module):
 
         # ####### Do hoi class fc ############
         action_logits = []
+        text_embedding = self.text_embedding / self.text_embedding.norm(dim=-1, keepdim=True)
         for each_frame in logits:
+            # print(each_frame)
             frame_logits = []
             for each_action in each_frame:
-                frame_logits.append(self.logit_scale.exp() * self.visual_projection(each_action))
+                score = each_action @ text_embedding.t() / 0.07
+                frame_logits.append(each_action @ text_embedding.t() / 0.07)
+            frame_logits = torch.stack(frame_logits)
             action_logits.append(frame_logits) 
+        torch.cuda.empty_cache()
         # ####################################
 
-        if self.args.with_obj_clip_label:
-            obj_logit_scale = self.obj_logit_scale.exp()
-            o_hs = self.obj_class_fc(o_hs)
-            o_hs = o_hs / o_hs.norm(dim=-1, keepdim=True)
-            outputs_obj_class = obj_logit_scale * self.obj_visual_projection(o_hs)
-        else:
-            outputs_obj_class = self.obj_class_embed(o_hs)
+        # if self.args.with_obj_clip_label:
+        #     obj_logit_scale = self.obj_logit_scale.exp()
+        #     o_hs = self.obj_class_fc(o_hs)
+        #     o_hs = o_hs / o_hs.norm(dim=-1, keepdim=True)
+        #     outputs_obj_class = obj_logit_scale * self.obj_visual_projection(o_hs)
+        # else:
+        #     outputs_obj_class = self.obj_class_embed(o_hs)
 
-        if self.args.with_clip_label:
-            logit_scale = self.logit_scale.exp()
-            # inter_hs = self.hoi_class_fc(inter_hs)
-            outputs_inter_hs = inter_hs.clone()
-            verb_hs = self.inter2verb(inter_hs)
-            inter_hs = inter_hs / inter_hs.norm(dim=-1, keepdim=True)
-            verb_hs = verb_hs / verb_hs.norm(dim=-1, keepdim=True)
-            if self.args.dataset_file == 'hico' and self.args.zero_shot_type != 'default' \
-                    and (self.args.eval or not is_training):
-                outputs_hoi_class = logit_scale * self.eval_visual_projection(inter_hs)
-                outputs_verb_class = logit_scale * self.verb_projection(verb_hs) @ self.verb2hoi_proj_eval
-                outputs_hoi_class = outputs_hoi_class + outputs_verb_class * self.verb_weight
-            else:
-                outputs_hoi_class = logit_scale * self.visual_projection(inter_hs)
-                outputs_verb_class = logit_scale * self.verb_projection(verb_hs) @ self.verb2hoi_proj
-                outputs_hoi_class = outputs_hoi_class + outputs_verb_class * self.verb_weight
-        else:
-            inter_hs = self.hoi_class_fc(inter_hs)
-            outputs_inter_hs = inter_hs.clone()
-            outputs_hoi_class = self.hoi_class_embedding(inter_hs)
+        # if self.args.with_clip_label:
+        #     logit_scale = self.logit_scale.exp()
+        #     # inter_hs = self.hoi_class_fc(inter_hs)
+        #     outputs_inter_hs = inter_hs.clone()
+        #     verb_hs = self.inter2verb(inter_hs)
+        #     inter_hs = inter_hs / inter_hs.norm(dim=-1, keepdim=True)
+        #     verb_hs = verb_hs / verb_hs.norm(dim=-1, keepdim=True)
+        #     if self.args.dataset_file == 'hico' and self.args.zero_shot_type != 'default' \
+        #             and (self.args.eval or not is_training):
+        #         outputs_hoi_class = logit_scale * self.eval_visual_projection(inter_hs)
+        #         outputs_verb_class = logit_scale * self.verb_projection(verb_hs) @ self.verb2hoi_proj_eval
+        #         outputs_hoi_class = outputs_hoi_class + outputs_verb_class * self.verb_weight
+        #     else:
+        #         outputs_hoi_class = logit_scale * self.visual_projection(inter_hs)
+        #         outputs_verb_class = logit_scale * self.verb_projection(verb_hs) @ self.verb2hoi_proj
+        #         outputs_hoi_class = outputs_hoi_class + outputs_verb_class * self.verb_weight
+        # else:
+        #     inter_hs = self.hoi_class_fc(inter_hs)
+        #     outputs_inter_hs = inter_hs.clone()
+        #     outputs_hoi_class = self.hoi_class_embedding(inter_hs)
         
         # out = {'pred_hoi_logits': action_logits, 'pred_obj_logits': outputs_obj_class[-1],
         #        'pred_sub_boxes': outputs_sub_coord[-1], 'pred_obj_boxes': outputs_obj_coord[-1], 'clip_visual': clip_visual,
         #        'clip_cls_feature': clip_cls_feature, 'hoi_feature': inter_hs[-1], 'clip_logits': clip_hoi_score}
         out = {'pred_hoi_logits': action_logits,
+                'pred_pair_id': pair_dict,
                 # 'pred_obj_logits': obj_logits,
                 'pred_obj_boxes': human_bboxes,
                 'pred_sub_boxes': obj_bboxes,
@@ -392,6 +447,9 @@ class SetCriterionHOI(nn.Module):
             self.clip_model = None
         self.alpha = args.alpha
 
+        # softmax focal loss
+        self.softmax_focal = SoftmaxFocalLoss()
+
     def loss_obj_labels(self, outputs, targets, indices, num_interactions, log=True):
         # assert 'pred_obj_logits' in outputs
         src_logits = outputs['pred_obj_logits']
@@ -443,37 +501,70 @@ class SetCriterionHOI(nn.Module):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         assert 'pred_hoi_logits' in outputs
         src_logits = outputs['pred_hoi_logits'] # I have N + M predicts
-        print(targets[0]['hoi_labels'].shape) # means there are 4 labels
+        # print(targets[0]['hoi_labels'].shape) # means there are 4 labels
         # dtype = src_logits.dtype
         # idx = self._get_src_permutation_idx(indices)
 
         # for each batch:
         # for i in src_logits:
         acc = 0.0
+        loss = []
         for tid, each_target in enumerate(targets):
-
             # collect target_numbers perdictions
+            acc_pred = 0.0
+            # print(len(each_target["sub_boxes"]), len(each_target["obj_boxes"]))
+            # print(torch.where(each_target['hoi_labels'] == 1))
+            # exit()
+            tgt_idx = torch.where(each_target['hoi_labels'] == 1)[1]
+            # print(each_target["sub_boxes"], each_target["obj_boxes"])
+            # print(tid, tgt_idx)
+            # print(src_logits[tid].shape)
+
+            gt_num = len(tgt_idx) # for each one sub which has gt_num interaction
+
             batch_pred = []
-            for each_pred in src_logits[tid]:
-                pred = _sigmoid(each_pred)
+            for indices_id in indices[tid][0]:
+                pred = src_logits[tid][indices_id]
+                # acc loss
+                acc_pre = torch.nn.functional.softmax(src_logits[tid][indices_id], dim=-1).topk(gt_num, 0, True, True)[1]
+                # print(acc_pre, tgt_idx)
+                
+                for tgt_rel in tgt_idx:
+                    acc_pred += (tgt_rel in acc_pre)
+                
                 batch_pred.append(pred)
-            batch_pred = torch.stack(batch_pred).to(device)
-            for each_indice in indices:
-                for pair in len(each_target['hoi_labels']):
-                    idx = (each_indice[0][pair] +1 * each_indice[1][pair] +1)
-                    true_pred = 
-            loss_hoi_ce = self._neg_loss(batch_pred, each_target['hoi_labels'], weights=None, alpha=self.alpha)
-            exit()
+            
+            if (len(batch_pred) == 0): 
+                batch_pred.append(torch.zeros(each_target['hoi_labels'].shape[1]))
+                batch_pred = torch.stack(batch_pred)
+                target_class_o = torch.zeros((1,each_target['hoi_labels'].shape[1]))
+                loss_hoi_ce = self.softmax_focal(batch_pred, target_class_o, weights=None, gamma=self.alpha)
+            else:
+                batch_pred = torch.stack(batch_pred).to(device)
+                loss_hoi_ce = self.softmax_focal(batch_pred, each_target['hoi_labels'], weights=None, gamma=self.alpha)
+            # loss_hoi_ce = self._neg_loss(batch_pred, each_target['hoi_labels'], weights=None, alpha=self.alpha)
+            loss.append(loss_hoi_ce)
+
+            # print(acc_pred, len(tgt_idx))
+            rel_labels_error = 100 - 100 * acc_pred / max(len(tgt_idx), 1)
+            acc += rel_labels_error
+
+        loss = torch.tensor(sum(loss)).to(device)
+        losses = {'loss_hoi_labels': loss}
+        
+        # losses['hoi_class_error'] = torch.from_numpy(np.array(
+        #     rel_labels_error)).to(device).float()
+        
             # acc_pred = 0.0
             # for tgt_rel in tgt_idx:
             #     acc_pred += (tgt_rel in pre)
             # acc += acc_pred / len(tgt_idx)
 
         
-        rel_labels_error = 100 - 100 * acc / max(len(targets), 1)
-        losses = {}
-        losses['loss_hoi_labels'] = torch.from_numpy(np.array(
-            rel_labels_error)).to(device).float()
+        # rel_labels_error = 100 - 100 * acc / max(len(targets), 1)
+        # losses = {}
+        # losses['loss_hoi_labels'] = torch.from_numpy(np.array(
+        #     rel_labels_error)).to(device).float()
 
         # target_classes_o = torch.cat([t['hoi_labels'][J] for t, (_, J) in zip(targets, indices)]).to(dtype)
         # target_classes = torch.zeros_like(src_logits)
@@ -609,8 +700,7 @@ class SetCriterionHOI(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        sub_indices, obj_indices = self.matcher(outputs_without_aux, targets)
-        indices = (sub_indices, obj_indices)
+        indices = self.matcher(outputs_without_aux, targets)
         # indices = [0,0]
 
         num_interactions = sum(len(t['hoi_labels']) for t in targets)
@@ -656,6 +746,7 @@ class PostProcessHOITriplet(nn.Module):
         # out_obj_logits = outputs['pred_obj_logits']
         out_sub_boxes = outputs['pred_sub_boxes']
         out_obj_boxes = outputs['pred_obj_boxes']
+        pair = outputs['pred_pair_id']
         # clip_visual = outputs['clip_visual']
         # clip_logits = outputs['clip_logits']
 
@@ -677,7 +768,7 @@ class PostProcessHOITriplet(nn.Module):
         for index in range(len(hoi_scores)):
             # hs, os, ol, sb, ob = hoi_scores[index], obj_scores[index], obj_labels[index], sub_boxes[index], obj_boxes[
             #     index]
-            hs, sb, ob = hoi_scores[index],sub_boxes[index], obj_boxes[index]
+            hs, sb, ob = hoi_scores[index],sub_boxes[pair[index][0]], obj_boxes[pair[index][1]]
             # sl = torch.full_like(ol, self.subject_category_id)
             # l = torch.cat((sl, ol))
             b = torch.cat((sb, ob))
@@ -685,7 +776,6 @@ class PostProcessHOITriplet(nn.Module):
             # results.append({'labels': l.to('cpu')})
 
             ids = torch.arange(b.shape[0])
-            print(ids)
 
             # results[-1].update({'hoi_scores': hs.to('cpu'), 'obj_scores': os.to('cpu'), 'clip_visual': clip_visual[index].to('cpu'),
             #                     'sub_ids': ids[:ids.shape[0] // 2], 'obj_ids': ids[ids.shape[0] // 2:], 'clip_logits': clip_logits[index].to('cpu')})

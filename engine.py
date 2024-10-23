@@ -17,6 +17,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import datetime
 import time
+import wandb
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -70,7 +71,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         outputs = model(samples, clip_input=clip_img, targets=targets, imgs_path= imgs_path, human_bboxes=human, obj_bboxes=objs, original_imgs=original_imgs)
         loss_dict = criterion(outputs, targets)
-
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
@@ -81,15 +81,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
                                     for k, v in loss_dict_reduced.items() if k in weight_dict}
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
-
+        
+        # print([item for item in losses_reduced_scaled])
         loss_value = losses_reduced_scaled.item()
-        loss_value = losses_reduced_scaled
-        # print(loss_value)
+        # loss_value = [t.numpy() for t in loss_value]
+        # loss_value = losses_reduced_scaled
         # sys.exit()
+        losses.requires_grad = True
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
-            print(loss_dict_reduced)
             sys.exit(1)
 
         delay_unscale = (step + 1) % gradient_accumulation_steps != 0
@@ -99,7 +100,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             # with amp.scale_loss(losses, optimizer, delay_unscale=delay_unscale) as scaled_loss:
             #     scaled_loss.backward()
         else:
-            losses.backward()
+            losses.sum().backward()
 
         if (step + 1) % gradient_accumulation_steps == 0:
             if max_norm > 0:
@@ -127,6 +128,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         else:
             metric_logger.update(obj_class_error=loss_dict_reduced['obj_class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        # log metrics to wandb
+        wandb.log({"loss": losses})
 
     # trick for generate verb
     if no_training:
@@ -153,7 +156,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         v_feature = verb_feature / verb_feature.norm(dim=-1, keepdim=True)
         torch.save(v_feature, f'./verb_{args.dataset_file}.pth')
-        exit()
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

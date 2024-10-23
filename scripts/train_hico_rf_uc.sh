@@ -20,15 +20,15 @@ do
             --backbone resnet50 \
             --num_queries 64 \
             --dec_layers 3 \
-            --epochs 90 \
+            --epochs 1 \
             --lr_drop 60 \
             --use_nms_filter \
             --fix_clip \
-            --batch_size 2 \
+            --batch_size 4 \
             --with_clip_label \
             --with_obj_clip_label \
             --gradient_accumulation_steps 1 \
-            --num_workers 8 \
+            --num_workers 4 \
             --opt_sched "multiStep" \
             --dataset_root GEN \
             --model_name HOICLIP \

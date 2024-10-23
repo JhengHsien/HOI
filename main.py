@@ -16,9 +16,12 @@ from datasets import build_dataset
 from engine import train_one_epoch, evaluate_hoi
 from models import build_model
 import os
+import wandb
 
 from util.scheduler import CosineAnnealingLRWarmup, MultiStepLRWarmup
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:6144"
 
+wandb.login()
 
 def setup_seed(seed):
     torch.manual_seed(seed)
@@ -30,13 +33,13 @@ def setup_seed(seed):
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
-    parser.add_argument('--lr', default=1e-4, type=float)
+    parser.add_argument('--lr', default=1e-5, type=float)
     parser.add_argument('--lr_backbone', default=1e-5, type=float)
-    parser.add_argument('--lr_clip', default=1e-5, type=float)
+    parser.add_argument('--lr_clip', default=1e-4, type=float)
     parser.add_argument('--batch_size', default=2, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=150, type=int)
-    parser.add_argument('--lr_drop', default=100, type=int)
+    parser.add_argument('--lr_drop', default=200, type=int)
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
     parser.add_argument('--eval_each', default=4, type=int)
@@ -115,7 +118,7 @@ def get_args_parser():
     parser.add_argument('--verb_loss_coef', default=2, type=float)
     parser.add_argument('--hoi_loss_coef', default=2, type=float)
     parser.add_argument('--mimic_loss_coef', default=20, type=float)
-    parser.add_argument('--alpha', default=0.5, type=float, help='focal loss alpha')
+    parser.add_argument('--alpha', default=0.7, type=float, help='focal loss alpha')
     parser.add_argument('--eos_coef', default=0.1, type=float,
                         help="Relative classification weight of the no-object class")
 
@@ -231,6 +234,18 @@ def main(args):
     print(args)
 
     device = torch.device(args.device)
+    # wandb.init(
+    #     # set the wandb project where this run will be logged
+    #     project="HOI",
+
+    #     # track hyperparameters and run metadata
+    #     config={
+    #     "learning_rate": args.lr,
+    #     "architecture": "CLIP",
+    #     "dataset": "HICO-DET",
+    #     "epochs": args.epochs,
+    #     }
+    # )  
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -340,6 +355,9 @@ def main(args):
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
+    for name, p in model.named_parameters():
+        if (p.requires_grad):
+            print(name)
 
     if args.opt_sched == 'multiStep':
         lr_scheduler = MultiStepLRWarmup(optimizer, [args.lr_drop], warmup_iter=0, warmup_ratio=0.01,
@@ -475,6 +493,8 @@ def main(args):
     print("Start training")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
+        # if hasattr(torch.cuda, 'empty_cache'):
+        #     torch.cuda.empty_cache()
         if args.distributed:
             sampler_train.set_epoch(epoch)
 
@@ -509,6 +529,9 @@ def main(args):
             performance = test_stats['mAP_all']
         elif args.dataset_file == 'hoia':
             performance = test_stats['mAP']
+        
+        # log metrics to wandb
+        # wandb.log({"acc": performance})
 
         if performance > best_performance:
             checkpoint_path = os.path.join(output_dir, 'checkpoint_best.pth')

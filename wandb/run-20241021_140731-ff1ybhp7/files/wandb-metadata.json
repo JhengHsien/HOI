@@ -1,0 +1,96 @@
+{
+  "os":  "Linux-6.8.0-40-generic-x86_64-with-glibc2.35",
+  "python":  "3.10.15",
+  "startedAt":  "2024-10-21T05:07:31.220957Z",
+  "args":  [
+    "--output_dir",
+    "exps/hico/hoiclip",
+    "--dataset_file",
+    "hico",
+    "--hoi_path",
+    "data/hico_20160224_det",
+    "--num_obj_classes",
+    "80",
+    "--num_verb_classes",
+    "117",
+    "--backbone",
+    "resnet50",
+    "--num_queries",
+    "64",
+    "--dec_layers",
+    "3",
+    "--epochs",
+    "1",
+    "--lr_drop",
+    "60",
+    "--use_nms_filter",
+    "--fix_clip",
+    "--batch_size",
+    "4",
+    "--with_clip_label",
+    "--with_obj_clip_label",
+    "--gradient_accumulation_steps",
+    "1",
+    "--num_workers",
+    "4",
+    "--opt_sched",
+    "multiStep",
+    "--dataset_root",
+    "GEN",
+    "--model_name",
+    "HOICLIP",
+    "--del_unseen",
+    "--zero_shot_type",
+    "rare_first",
+    "--resume",
+    "exps/hico/hoiclip/checkpoint_last.pth",
+    "--verb_pth",
+    "./tmp/verb.pth",
+    "--training_free_enhancement_path",
+    "./training_free_ehnahcement/"
+  ],
+  "program":  "/home/nii/Desktop/sin/HOICLIP/main.py",
+  "codePath":  "main.py",
+  "git":  {
+    "remote":  "https://github.com/JhengHsien/HOI.git",
+    "commit":  "259a3e0441473d9a29574aebda533d17b8b4005a"
+  },
+  "email":  "s111062569@m111.nthu.edu.tw",
+  "root":  "/home/nii/Desktop/sin/HOICLIP",
+  "host":  "nii-Super-Server",
+  "username":  "nii",
+  "executable":  "/home/nii/miniconda3/envs/HOICLIP/bin/python",
+  "codePathLocal":  "main.py",
+  "cpu_count":  4,
+  "cpu_count_logical":  8,
+  "gpu":  "NVIDIA GeForce RTX 2080 Ti",
+  "gpu_count":  2,
+  "disk":  {
+    "/":  {
+      "total":  "982820896768",
+      "used":  "921681473536"
+    }
+  },
+  "memory":  {
+    "total":  "67114815488"
+  },
+  "cpu":  {
+    "count":  4,
+    "countLogical":  8
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 2080 Ti",
+      "memoryTotal":  "11811160064",
+      "cudaCores":  4352,
+      "architecture":  "Turing"
+    },
+    {
+      "name":  "NVIDIA GeForce RTX 2080 Ti",
+      "memoryTotal":  "11811160064",
+      "cudaCores":  4352,
+      "architecture":  "Turing"
+    }
+  ],
+  "cudaVersion":  "12.2"
+}
