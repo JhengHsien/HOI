@@ -132,6 +132,8 @@ class HICODetection(torch.utils.data.Dataset):
             classes = [(i, self._valid_obj_ids.index(obj['category_id'])) for i, obj in
                        enumerate(img_anno['annotations'])]
         else:
+            for obj in img_anno['annotations']:
+                if (obj['category_id'] == 29): exit()
             classes = [self._valid_obj_ids.index(obj['category_id']) for obj in img_anno['annotations']]
         classes = torch.tensor(classes, dtype=torch.int64)
 
@@ -208,6 +210,9 @@ class HICODetection(torch.utils.data.Dataset):
             target['boxes'] = boxes
             target['labels'] = classes
             target['id'] = idx
+            target['sub_boxes'] = None
+            target['obj_boxes'] = None
+
 
             if self._transforms is not None:
                 img_0, _ = self._transforms[0](img, None)

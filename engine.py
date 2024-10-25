@@ -175,11 +175,11 @@ def evaluate_hoi(dataset_file, model, postprocessors, data_loader,
     gts = []
     counter = 0
 
-    for samples, targets in metric_logger.log_every(data_loader, 10, header):
+    for samples, targets, imgs_path, human, objs, original_imgs in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         clip_img = torch.stack([v['clip_inputs'] for v in targets]).to(device)
 
-        outputs = model(samples, is_training=False, clip_input=clip_img, targets=targets)
+        outputs = model(samples, clip_input=clip_img, targets=targets, imgs_path= imgs_path, human_bboxes=human, obj_bboxes=objs, original_imgs=original_imgs)
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         results = postprocessors['hoi'](outputs, orig_target_sizes)
 

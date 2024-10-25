@@ -234,18 +234,18 @@ def main(args):
     print(args)
 
     device = torch.device(args.device)
-    # wandb.init(
-    #     # set the wandb project where this run will be logged
-    #     project="HOI",
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="HOI",
 
-    #     # track hyperparameters and run metadata
-    #     config={
-    #     "learning_rate": args.lr,
-    #     "architecture": "CLIP",
-    #     "dataset": "HICO-DET",
-    #     "epochs": args.epochs,
-    #     }
-    # )  
+        # track hyperparameters and run metadata
+        config={
+        "learning_rate": args.lr,
+        "architecture": "CLIP",
+        "dataset": "HICO-DET",
+        "epochs": args.epochs,
+        }
+    )  
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -531,7 +531,7 @@ def main(args):
             performance = test_stats['mAP']
         
         # log metrics to wandb
-        # wandb.log({"acc": performance})
+        wandb.log({"acc": performance})
 
         if performance > best_performance:
             checkpoint_path = os.path.join(output_dir, 'checkpoint_best.pth')

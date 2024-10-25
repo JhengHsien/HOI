@@ -10,15 +10,16 @@ import numpy as np
 from ModifiedCLIP import clip
 from datasets.hico_text_label import hico_text_label, hico_obj_text_label, hico_unseen_index
 from datasets.vcoco_text_label import vcoco_hoi_text_label, vcoco_obj_text_label
-from datasets.static_hico import HOI_IDX_TO_ACT_IDX
+from datasets.static_hico import HOI_IDX_TO_ACT_IDX, OBJ_IDX_TO_OBJ_NAME
 
 from ..backbone import build_backbone
 from ..matcher import build_matcher
 from .gen import build_gen
 from .dino import dino
-from .ca import CrossAttention
+# from .ca import CrossAttention
 from .softmax_focal import SoftmaxFocalLoss
 from datasets.static_hico import OBJ_IDX_TO_OBJ_NAME
+import math
 
 
 def _sigmoid(x):
@@ -52,8 +53,8 @@ class HOICLIP(nn.Module):
         # Dino
         self.dino = dino()
         # Cross Attention
-        # self.MHA = nn.MultiheadAttention(embed_dim=512, num_heads=8)
-        self.CrossAttention = CrossAttention(input_dim=512, key_dim=512, value_dim=512)
+        self.MHA = nn.MultiheadAttention(embed_dim=512, num_heads=8)
+        # self.CrossAttention = CrossAttention
         self.projector = nn.Linear(512, 512)
 
         if self.args.dataset_file == 'hico':
@@ -180,24 +181,17 @@ class HOICLIP(nn.Module):
 
     def forward(self, samples: NestedTensor, is_training=True, clip_input=None, targets=None, imgs_path=None, human_bboxes=None, obj_bboxes=None, original_imgs=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        # if not isinstance(samples, NestedTensor):
-        #     samples = nested_tensor_from_tensor_list(samples)
-        # features, pos = self.backbone(samples)
-
-        # src, mask = features[-1].decompose()
-        # assert mask is not None
-        # h_hs, o_hs, inter_hs, clip_cls_feature, clip_hoi_score, clip_visual = self.transformer(self.input_proj(src), mask,
-        #                                         self.query_embed_h.weight,
-        #                                         self.query_embed_o.weight,
-        #                                         self.pos_guided_embedd.weight,
-        #                                         pos[-1], self.clip_model, self.clip_visual_proj, clip_input)
-
-        # outputs_sub_coord = self.hum_bbox_embed(h_hs).sigmoid()
-        # outputs_obj_coord = self.obj_bbox_embed(o_hs).sigmoid()
         
         # (decoder_layer, bs, quries, 256), (decoder_layer, bs, quries, 256), (decoder_layer, bs, quries, 512), (bs, quries, 512), (bs, 1 , 600), (bs, 50, 512)
         
+
         ## train stage ##
+        if (type(human_bboxes[0]) == type(None)):
+            obj_classes=OBJ_IDX_TO_OBJ_NAME
+            dino_human_bboxes, dino_object_boxes = self.dino.catch(obj_classes=obj_classes, imgs_path=imgs_path)
+            human_bboxes = dino_human_bboxes
+            obj_bboxes = dino_object_boxes
+
         human_features = []
 
         for idx, boxes in enumerate(human_bboxes):
@@ -252,6 +246,7 @@ class HOICLIP(nn.Module):
                 wanted_features = self.clip_model.encode_image(wanted_features)[0].float()
 
             obj_features.append(wanted_features)
+    
 
         ############################################
 
@@ -278,36 +273,24 @@ class HOICLIP(nn.Module):
             if (len(people) == 0 or len(obj_features[idx]) == 0):
                 logit.append(torch.zeros((1, 512), dtype=torch.float32))
             else:
+                
                 all_pair = []
-                pair_dict = []
                 
                 people_nums = people.shape[0]
-                objects_numd = object_feature[idx].shape[0]
+                objects_nums = obj_features[idx].shape[0]
 
+                all_pair.append(torch.range(0,objects_nums))
 
-                po_features = self.CrossAttention(people, objects, objects)
+                po_gcd = math.lcm(people_nums, objects_nums)
 
-            #     for p_id, each_person in enumerate(people):
-            #         ### Do corss attention ###
-            #         for o_id, each_object in enumerate(obj_features[idx]):
-                        
-            #             # ho_pair_feature = torch.cat((each_person.unsqueeze(0), each_object.unsqueeze(0)), dim=0) # 2,512
-            #             attn_output = self.CrossAttention(scene[idx].unsqueeze(0), ho_pair_feature, ho_pair_feature)
-            #             attn_output = attn_output.squeeze(0)
-            #             attn_output = torch.div(attn_output, 2)
-            #             interaction = torch.add(attn_output, torch.div(scene[idx],2))
+                human = people.repeat(int(po_gcd/people_nums), 1)
+                objects = obj_features[idx].repeat(int(po_gcd/objects_nums), 1)
 
-            #             all_pair.append(interaction)
-            #             pair_dict.append((p_id, o_id))
-                
-            #     ho_interaction = torch.stack(all_pair).to(device)
-            #     ho_interaction = ho_interaction / ho_interaction.norm(dim=-1, keepdim=True)
-
-            #     logits.append(ho_interaction) 
-            #     pair_match.append(pair_dict)
-
-            # logits = torch.stack(logits).to(device)
-            del attn_output, ho_pair_feature
+                po_features = self.MHA(human, objects, objects)[0][:people_nums]
+                po_features = torch.div(po_features, 2)
+                po_features = torch.add(po_features, torch.div(scene[idx].repeat(po_features.shape[0],1),2))
+                logits.append(po_features)
+            pair_match.append(all_pair)
 
                 # Do classify
 
@@ -320,17 +303,15 @@ class HOICLIP(nn.Module):
         #     obj_logits.append(self.obj_logit_scale.exp() * self.obj_visual_projection(each_object))
         ####################################
 
-        # ####### Do hoi class fc ############
+        # ####### Do hoi class fc ###########
+
+
         action_logits = []
         text_embedding = self.text_embedding / self.text_embedding.norm(dim=-1, keepdim=True)
+        text_embedding = self.projector(text_embedding)
         for each_frame in logits:
-            # print(each_frame)
-            frame_logits = []
-            for each_action in each_frame:
-                score = each_action @ text_embedding.t() / 0.07
-                frame_logits.append(each_action @ text_embedding.t() / 0.07)
-            frame_logits = torch.stack(frame_logits)
-            action_logits.append(frame_logits) 
+            frame_eatures = self.projector(each_frame)
+            action_logits.append(frame_eatures @ text_embedding.t())
         torch.cuda.empty_cache()
         # ####################################
 
@@ -367,7 +348,7 @@ class HOICLIP(nn.Module):
         #        'pred_sub_boxes': outputs_sub_coord[-1], 'pred_obj_boxes': outputs_obj_coord[-1], 'clip_visual': clip_visual,
         #        'clip_cls_feature': clip_cls_feature, 'hoi_feature': inter_hs[-1], 'clip_logits': clip_hoi_score}
         out = {'pred_hoi_logits': action_logits,
-                'pred_pair_id': pair_dict,
+                'pred_pair_id': pair_match,
                 # 'pred_obj_logits': obj_logits,
                 'pred_obj_boxes': human_bboxes,
                 'pred_sub_boxes': obj_bboxes,
@@ -753,12 +734,12 @@ class PostProcessHOITriplet(nn.Module):
         assert len(out_hoi_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        hoi_scores = out_hoi_logits.sigmoid()
+        hoi_scores = out_hoi_logits
         # obj_scores = out_obj_logits.sigmoid()
         # obj_labels = F.softmax(out_obj_logits, -1)[..., :-1].max(-1)[1]
 
         img_h, img_w = target_sizes.unbind(1)
-        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(hoi_scores.device)
+        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1).to(hoi_scores[0].device)
         # sub_boxes = box_cxcywh_to_xyxy(out_sub_boxes)
         # sub_boxes = sub_boxes * scale_fct[:, None, :]
         # obj_boxes = box_cxcywh_to_xyxy(out_obj_boxes)
@@ -768,11 +749,13 @@ class PostProcessHOITriplet(nn.Module):
         for index in range(len(hoi_scores)):
             # hs, os, ol, sb, ob = hoi_scores[index], obj_scores[index], obj_labels[index], sub_boxes[index], obj_boxes[
             #     index]
-            hs, sb, ob = hoi_scores[index],sub_boxes[pair[index][0]], obj_boxes[pair[index][1]]
+            hs = hoi_scores[index]
+            sb = out_sub_boxes[index]
+            ob = out_obj_boxes[index]
             # sl = torch.full_like(ol, self.subject_category_id)
             # l = torch.cat((sl, ol))
             b = torch.cat((sb, ob))
-            results.append({'labels': l.to('cpu'), 'boxes': b.to('cpu')})
+            results.append({'boxes': b.to('cpu')})
             # results.append({'labels': l.to('cpu')})
 
             ids = torch.arange(b.shape[0])

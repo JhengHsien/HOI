@@ -12,6 +12,7 @@ do
             --nproc_per_node=1 \
             --use_env \
             main.py \
+            --eval \
             --output_dir ${EXP_DIR} \
             --dataset_file hico \
             --hoi_path data/hico_20160224_det \
@@ -20,7 +21,7 @@ do
             --backbone resnet50 \
             --num_queries 64 \
             --dec_layers 3 \
-            --epochs 1 \
+            --epochs 5 \
             --lr_drop 60 \
             --use_nms_filter \
             --fix_clip \

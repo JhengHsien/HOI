@@ -201,6 +201,7 @@ class HICOEvaluator():
                     img_gts = {k: v.to('cpu').numpy() for k, v in img_gts.items() if k != 'id' and k != 'filename'}
                     bbox_anns = [{'bbox': list(bbox), 'category_id': label} for bbox, label in
                                  zip(img_gts['boxes'], img_gts['labels'])]
+                    
                     hoi_anns = [{'subject_id': hoi[0], 'object_id': hoi[1],
                                  'category_id': self.hico_triplet_labels.index(
                                      (hoi[2], bbox_anns[hoi[1]]['category_id']))}
