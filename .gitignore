@@ -172,3 +172,5 @@ cython_debug/
 GroundingDINO/*
 git-filter-repo
 wget-log
+exps/hico/hoiclip
+wandb
