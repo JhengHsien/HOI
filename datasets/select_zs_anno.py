@@ -27,7 +27,7 @@ def distr(images_set, mode=None, HOI_dist = None, verb_dist = None):
             for hoi_item in item["hoi_annotation"]:
                 hoi_label = hoi_item["hoi_category_id"]
                 verb_id = hico_text_label_list[hoi_label-1][0]+1
-                if (verb_id == 58):continue
+                # if (verb_id == 58):continue
                 verb_dist[str(verb_id)] +=1
             
                 hoi_idx = hoi_label
@@ -39,12 +39,13 @@ def distr(images_set, mode=None, HOI_dist = None, verb_dist = None):
             for anno in item["hoi_annotation"]:
                 obj_id = anno["object_id"]
                 verb_id = anno["category_id"]
-                if (verb_id == 58):continue
+                # if (verb_id == 58): continue
                 pair_id = (verb_id -1, valid_obj_ids.index(obj_info[obj_id]))
                 hoi_id = hico_text_label_list.index(pair_id)+1
 
                 HOI_dist[str(hoi_id)] +=1
                 verb_dist[str(verb_id)] +=1
+
 
     hoi_result_lists = sorted(HOI_dist.items(), key=lambda x:x[1]) # sorted by key, return a list of tuples
     hoi_verb = []
@@ -54,18 +55,18 @@ def distr(images_set, mode=None, HOI_dist = None, verb_dist = None):
 
     verb_list = sorted(verb_dist.items(), key=lambda x:x[1])
     verb_dist = dict(verb_list)
+    hoi_dict = dict(hoi_result_lists)
 
     keys = list(verb_dist.keys())
     vals = [verb_dist[k] for k in keys]
-    plt.gcf().set_size_inches(70,10)
+    plt.gcf().set_size_inches(200,10)
     sns.barplot(x=keys, y=vals)
 
-    plt.savefig(f'data_split/unseen_obj/train_verb_distribution.png')
+    plt.savefig(f'test_verb_distribution.png')
     plt.close()
 
 
     # print(sorted(verb_dist.items(), key=lambda x:x[1]))
-    # exit()
     
     top_verb_result_lists = sorted(verb_dist.items(), key=lambda x:x[1])[-3:]
     medium_verb_result_lists = sorted(verb_dist.items(), key=lambda x:x[1])[54:-3]
@@ -117,7 +118,8 @@ with open('/home/nii/Desktop/sin/HOICLIP/data/hico_20160224_det/annotations/test
 HOI_dist = {}
 verb_dist = {}
 top_verb, medium_verb, bottom_verb, rare_verb = distr(test, mode="test", HOI_dist=HOI_dist, verb_dist=verb_dist)
-# distr(test, mode="test", HOI_dist=HOI_dist, verb_dist=verb_dist)
+
+exit()
 top_obj_cand = []
 medium_obj_cand = []
 botom_obj_cand = []
@@ -129,10 +131,7 @@ botom_verb_cand = dict(random.sample(bottom_verb, 13))
 rare_verb_cand = dict(random.sample(rare_verb, 4))
 
 all_test_verb = set(list(top_verb_cand)) | set(list(medium_verb_cand)) | set(list(botom_verb_cand)) | set(list(rare_verb_cand))
-print(len(valid_obj_ids))
-print(len(all_test_verb))
-print(all_test_verb)
-# Case 1: consider unseen objects & unseen verbs
+
 for each_triplet in hico_text_label_list:
     if (str(each_triplet[0]+1) in top_verb_cand.keys() and str(each_triplet[0]+1) != '58'):
         if (each_triplet[1] not in top_obj_cand):
@@ -147,29 +146,74 @@ for each_triplet in hico_text_label_list:
         if (each_triplet[1] not in rare_obj_cand):
             rare_obj_cand.append(each_triplet[1])
 
-common_obj = set(top_obj_cand) & set(medium_obj_cand) & set(botom_obj_cand) & set(rare_obj_cand)
-
-
-
-# # remains_obj = 
-
+common_obj = set(top_obj_cand) | set(rare_obj_cand)
 print(len(common_obj))
+others_verb = [i for i in verb_id if str(i) not in all_test_verb and i != '58' ]
+print(len(others_verb))
 
-others_verb = [i for i in verb_id if str(i) not in all_test_verb]
-# # print(len(others_verb))
+
+# # # Case 1: consider unseen verbs
+delete_count = 0
+all_anno = 0
+for item_idx, item in enumerate(test):
+    obj_info = [i["category_id"] for i in item["annotations"]]
+    delete_queue = []
+    for anno in item["hoi_annotation"]:
+        all_anno +=1
+        obj_id = anno["object_id"]
+        verb_id = anno["category_id"]
+        pair_id = (verb_id -1, valid_obj_ids.index(obj_info[obj_id]))
+        # hoi_id = hico_text_label_list.index(pair_id)+1
+
+        if (verb_id in others_verb):
+            delete_queue.append(anno)
+            delete_count +=1
+    for rm_item in delete_queue:
+        test[item_idx]["hoi_annotation"].remove(rm_item)
+
+print(all_anno)
+print(delete_count)
+
+# with open("test_uc_uv.json", "w") as outfile: 
+#     json.dump(test, outfile)
+
+all_anno = 0
+delete_count = 0
+remember = 0
+for item_idx, item in enumerate(train_images):
+    delete_queue = []
+    for hoi_item_idx, hoi_item in enumerate(item["hoi_annotation"]):
+        # print(len(item["hoi_annotation"]), hoi_item_idx, hoi_item["hoi_category_id"])
+        all_anno +=1
+        hoi_label = hoi_item["hoi_category_id"]
+
+        if (str(hico_text_label_list[hoi_label-1][0]+1) in all_test_verb):
+            delete_queue.append(hoi_item)
+            delete_count +=1
+    for rm_item in delete_queue:
+        train_images[item_idx]["hoi_annotation"].remove(rm_item)
+
+print(all_anno)
+print(delete_count)
+
+# with open("train_uc_uv.json", "w") as outfile: 
+#     json.dump(train_images, outfile)
+
+# # Case 2: consider unseen verbs
 # train_obj_cand = []
-
-# # # Case 1: consider unseen objects & unseen verbs
 # for each_triplet in hico_text_label_list:
-#     if (str(each_triplet[0]+1) in others_verb and str(each_triplet[0]+1) != '58'):
-#         if (each_triplet[1] not in top_obj_cand):
+#     if (each_triplet[0]+1 in others_verb and str(each_triplet[0]+1) != '58'):
+#         if (each_triplet[1] not in train_obj_cand):
 #             train_obj_cand.append(each_triplet[1])
-    
-# test_annotation = []
+# train_obj_cand = [i for i in valid_obj_ids if i not in common_obj]
+
+# print(train_obj_cand)
+
 # delete_count = 0
 # all_anno = 0
-# for item in test:
+# for item_idx, item in enumerate(test):
 #     obj_info = [i["category_id"] for i in item["annotations"]]
+#     delete_queue = []
 #     for anno in item["hoi_annotation"]:
 #         all_anno +=1
 #         obj_id = anno["object_id"]
@@ -177,21 +221,39 @@ others_verb = [i for i in verb_id if str(i) not in all_test_verb]
 #         pair_id = (verb_id -1, valid_obj_ids.index(obj_info[obj_id]))
 #         # hoi_id = hico_text_label_list.index(pair_id)+1
 
-#         if (obj_info[obj_id] in train_obj_cand or verb_id in others_verb):
-#             del anno
+#         if (verb_id in others_verb or obj_id in train_obj_cand):
+#             delete_queue.append(anno)
 #             delete_count +=1
+#     for rm_item in delete_queue:
+#         test[item_idx]["hoi_annotation"].remove(rm_item)
+
 # print(all_anno)
 # print(delete_count)
+
+# # with open("test_uc_uv.json", "w") as outfile: 
+# #     json.dump(test, outfile)
+
 # all_anno = 0
 # delete_count = 0
-# for item in train_images:
-#     for hoi_item in item["hoi_annotation"]:
+# remember = 0
+# for item_idx, item in enumerate(train_images):
+#     delete_queue = []
+#     for hoi_item_idx, hoi_item in enumerate(item["hoi_annotation"]):
+#         # print(len(item["hoi_annotation"]), hoi_item_idx, hoi_item["hoi_category_id"])
 #         all_anno +=1
 #         hoi_label = hoi_item["hoi_category_id"]
-#         if (valid_obj_ids[hico_text_label_list[hoi_label-1][1]] in common_obj or hico_text_label_list[hoi_label-1][0]+1 in all_test_verb):
-#             del hoi_item
+
+#         if (str(hico_text_label_list[hoi_label-1][0]+1) in all_test_verb or hico_text_label_list[hoi_label-1][0] in common_obj):
+#             delete_queue.append(hoi_item)
 #             delete_count +=1
+#     for rm_item in delete_queue:
+#         train_images[item_idx]["hoi_annotation"].remove(rm_item)
+
 # print(all_anno)
 # print(delete_count)
-# # print(top_obj_cand)
-# # remains_obj = 
+
+# with open("test_uc_uv.json", "w") as outfile: 
+#     json.dump(test, outfile)
+
+# with open("train_uc_uv.json", "w") as outfile: 
+#     json.dump(train_images, outfile)
