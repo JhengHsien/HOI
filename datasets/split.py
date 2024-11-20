@@ -32,47 +32,14 @@ with open('/home/nii/Desktop/sin/HOICLIP/data/hico_20160224_det/annotations/test
 
 # Case 1
 ############################################
-# top_group = [
-#     '36', '76', '87'
-# ] # 4
-
-# rare_group = [
-#     '109', '111', '99', '9', '15', 
-#     '79', '104', '67', '16', '32', 
-#     '75', '52', '47', '3', '44', 
-#     '108', '20', '54', '6', '35', 
-#     '101', '14', '85', '17', '2', 
-#     '107', '45', '103', '62', '71', 
-#     '48', '18', '25', '19', '80', 
-#     '102', '50', '83', '38', '11', 
-#     '10', '106', '59', '7', '105', 
-#     '0', '27', '89', '13', '64', 
-#     '95', '81', '40', '66', '68', 
-#     '37', '12', '96', '46', '1', 
-#     '5', '69', '33', '82', '55', 
-#     '60', '51', '97', '90', '63', 
-#     '31', '74', '42', '61', '53', 
-#     '88', '22', '84', '91', '56', 
-#     '92', '116', '100', '29', '113'
-# ] # 85
-
-# general_group = [
-#     '8', '98', '93', '114', '86', 
-#     '24', '43', '112', '41', '73', 
-#     '21', '94', '115', '30', '110', 
-#     '58', '23', '77', '34', '49', 
-#     '72', '39', '4', '26', '78', 
-#     '65', '70', '28'
-# ] # 28
-###########################################
-
-# Case 2
-# 55 - 95 - 5
 top_group = [
     '36', '76', '87'
 ] # 4
 
 rare_group = [
+    '109', '111', '99', '9', '15', 
+    '79', '104', '67', '16', '32', 
+    '75', '52', '47', '3', '44', 
     '108', '20', '54', '6', '35', 
     '101', '14', '85', '17', '2', 
     '107', '45', '103', '62', '71', 
@@ -87,7 +54,7 @@ rare_group = [
     '31', '74', '42', '61', '53', 
     '88', '22', '84', '91', '56', 
     '92', '116', '100', '29', '113'
-] # 70
+] # 85
 
 general_group = [
     '8', '98', '93', '114', '86', 
@@ -95,11 +62,46 @@ general_group = [
     '21', '94', '115', '30', '110', 
     '58', '23', '77', '34', '49', 
     '72', '39', '4', '26', '78', 
-    '65', '70', '28', '109', '111', 
-    '99', '9', '15', '79', '104', 
-    '67', '16', '32', '75', '52', 
-    '47', '3', '44'
-] # 43
+    '65', '70', '28'
+] # 28
+
+
+###########################################
+
+# Case 2
+# 55 - 95 - 5
+# top_group = [
+#     '36', '76', '87'
+# ] # 4
+
+# rare_group = [
+#     '108', '20', '54', '6', '35', 
+#     '101', '14', '85', '17', '2', 
+#     '107', '45', '103', '62', '71', 
+#     '48', '18', '25', '19', '80', 
+#     '102', '50', '83', '38', '11', 
+#     '10', '106', '59', '7', '105', 
+#     '0', '27', '89', '13', '64', 
+#     '95', '81', '40', '66', '68', 
+#     '37', '12', '96', '46', '1', 
+#     '5', '69', '33', '82', '55', 
+#     '60', '51', '97', '90', '63', 
+#     '31', '74', '42', '61', '53', 
+#     '88', '22', '84', '91', '56', 
+#     '92', '116', '100', '29', '113'
+# ] # 70
+
+# general_group = [
+#     '8', '98', '93', '114', '86', 
+#     '24', '43', '112', '41', '73', 
+#     '21', '94', '115', '30', '110', 
+#     '58', '23', '77', '34', '49', 
+#     '72', '39', '4', '26', '78', 
+#     '65', '70', '28', '109', '111', 
+#     '99', '9', '15', '79', '104', 
+#     '67', '16', '32', '75', '52', 
+#     '47', '3', '44'
+# ] # 43
 
 # # Case 3: 
 # "General" means: almost class should be there
@@ -187,11 +189,23 @@ test_verbs = []
 train_verbs = [str(i) for i in range(117)]
 
 top = random.sample(top_group, 1)
-general = random.sample(general_group, 18)
-rare = random.sample(rare_group, 10)
+general = random.sample(general_group, 7)
+rare = random.sample(rare_group, 21)
 
 test_verbs = top + general + rare
 train_verbs = [i for i in train_verbs if i not in test_verbs and i != str(57)]
+
+hoi_label_idx = []
+for i in train_verbs:
+    for j in hico_text_label_list:
+        if i == str(j[0]):
+            hoi_label_idx.append(hico_text_label_list.index(j))
+for j in hico_text_label_list:
+        if str(j[0]) == "57":
+            hoi_label_idx.append(hico_text_label_list.index(j))
+print(hoi_label_idx)
+print(len(hoi_label_idx))
+exit()
 
 train_annotations = []
 test_annotations = []
@@ -236,8 +250,8 @@ for item_idx, item in enumerate(test_images_by_train):
         if (str(verb_id) in train_verbs):
             recycle_bin.append(anno)
             remove_annotations +=1
-    for anno in recycle_bin:
-        test_images_by_train[item_idx]["hoi_annotation"].remove(anno)
+    # for anno in recycle_bin:
+    #     test_images_by_train[item_idx]["hoi_annotation"].remove(anno)
     test_annotations.append(test_images_by_train[item_idx])
 
 after_remove_annotations = 0
@@ -247,16 +261,16 @@ for item in test_annotations:
     after_remove_annotations += len(item["hoi_annotation"])
     if (len(item["hoi_annotation"]) == 0): 
         empty +=1
-        test_recycle.append(item["file_name"])
-        remove_list.append(item)
-for item in remove_list:
-    test_annotations.remove(item)
+#         test_recycle.append(item["file_name"])
+#         remove_list.append(item)
+# for item in remove_list:
+#     test_annotations.remove(item)
 
 print("------- test set analysis------- ")
 print("total images: ", len(test_images_by_test) + len(test_images_by_train))
 print("All annotations: ", all_annotations)
-print("Remove annotations: ", remove_annotations)
-print("After removing annotations ", after_remove_annotations)
+# print("Remove annotations: ", remove_annotations)
+# print("After removing annotations ", after_remove_annotations)
 print("Empty annotation: ", empty)
 
 # train annotations
@@ -320,19 +334,19 @@ print('train set before exchanging: ', len(train_annotations))
 for item in copy_test:
     if item["file_name"] in train_recycle:
         test_annotations.append(item)
-    if item["file_name"] in test_recycle:
-        for anno in item["hoi_annotation"]:
-            obj_id = valid_obj_ids.index(item["annotations"][anno["object_id"]]["category_id"]) # WTF is that annotations = = 
-            verb_id = anno["category_id"]-1
-            index = hico_text_label_list.index((verb_id, obj_id)) + 1
-            anno["hoi_category_id"] = index
-        train_annotations.append(item)
+    # if item["file_name"] in test_recycle:
+    #     for anno in item["hoi_annotation"]:
+    #         obj_id = valid_obj_ids.index(item["annotations"][anno["object_id"]]["category_id"]) # WTF is that annotations = = 
+    #         verb_id = anno["category_id"]-1
+    #         index = hico_text_label_list.index((verb_id, obj_id)) + 1
+    #         anno["hoi_category_id"] = index
+    #     train_annotations.append(item)
 
 for item in copy_train:
     if item["file_name"] in train_recycle:
         test_annotations.append(item)
-    if item["file_name"] in test_recycle:
-        train_annotations.append(item)
+    # if item["file_name"] in test_recycle:
+    #     train_annotations.append(item)
        
 all_annotations = 0
 empty = 0
@@ -355,12 +369,12 @@ print('train set after exchanging: ', len(train_annotations))
 
 
 
-with open("data/hico_20160224_det/annotations/55_95_5/test_uv.json", "w") as outfile: 
-    json.dump(test_annotations, outfile)
+# with open("data/hico_20160224_det/annotations/55_95_5/test_uv.json", "w") as outfile: 
+#     json.dump(test_annotations, outfile)
 
-with open("data/hico_20160224_det/annotations/55_95_5/train_uv.json", "w") as outfile: 
-    json.dump(train_annotations, outfile)
-# exit()
+# with open("data/hico_20160224_det/annotations/55_95_5/train_uv.json", "w") as outfile: 
+#     json.dump(train_annotations, outfile)
+
 # visulization
 import pandas as pd
 def distr(images_set, mode=None, HOI_dist = None, verb_dist = None):
@@ -427,17 +441,17 @@ def distr(images_set, mode=None, HOI_dist = None, verb_dist = None):
         'samples': vals,
         'colors': verb_dist['group']}
     plt.gcf().set_size_inches(40,10)
-    sns.barplot(data, x='verb id', y='samples', hue='colors').set_title('Test set verb distribution of 75_25 labels split')
+    sns.barplot(data, x='verb id', y='samples', hue='colors').set_title('Set verb distribution of 75_25 labels split')
     if (mode == "test"):
-        plt.savefig(f'data/hico_20160224_det/annotations/55_95_5/test_verb_distribution.png')
+        plt.savefig(f'data/hico_20160224_det/annotations/55_90_10/test_verb_distribution.png')
     else:
-        plt.savefig(f'data/hico_20160224_det/annotations/55_95_5/train_verb_distribution.png')
+        plt.savefig(f'data/hico_20160224_det/annotations/55_90_10/train_verb_distribution.png')
     plt.close()
 
-with open('/home/nii/Desktop/sin/HOICLIP/data/hico_20160224_det/annotations/55_95_5/train_uv.json', "r") as f:
+with open('/home/nii/Desktop/sin/HOICLIP/data/hico_20160224_det/annotations/55_90_10/train_uv.json', "r") as f:
     train = json.load(f)
 
-with open('/home/nii/Desktop/sin/HOICLIP/data/hico_20160224_det/annotations/55_95_5/test_uv.json', "r") as f:
+with open('/home/nii/Desktop/sin/HOICLIP/data/hico_20160224_det/annotations/55_90_10/test_uv.json', "r") as f:
     test = json.load(f)
 
 HOI_dist = {}
